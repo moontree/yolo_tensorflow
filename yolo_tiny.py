@@ -306,58 +306,48 @@ class YOLO_TF:
         pred_classes = pred[:, :, :, :20]
         pred_boxes_1 = pred[:, :, :, 20:24]
         pred_boxes_2 = pred[:, :, :, 24:28]
-        pred_p_objects = pred[:, :, :, 28:29]
+        pred_p_objects = pred[:, :, :, 28:30]
         real_classes = tf.reshape(real[:, :20], [-1, 1, 1, 20])
         real_boxes = tf.reshape(real[:, 20:24], [-1, 1, 1, 4])
         # print 'real_boxes shape', real_boxes.get_shape()
         objects_in_grids = tf.reshape(real[:, 24:], [-1, 7, 7, 1])
 
+        select_zeros = pred_p_objects[:,:,:,0] - pred_p_objects[:,:,:,0]
+        select_ones = select_zeros + 1
         # IOUS shape :  ? * 7 * 7 * 2
         with tf.variable_scope('IOUS') as scope:
             IOUS = cal_ious(pred_boxes_1, pred_boxes_2, real_boxes)
 
-        with tf.variable_scope('responsible_box') as scope:
-            IOUS_max = tf.cast(tf.reshape(tf.greater(IOUS[:, :, :, 0], IOUS[:, :, :, 1]), [-1, 7, 7, 1]), tf.float32)
-            IOUS_min = tf.cast(tf.reshape(tf.less_equal(IOUS[:, :, :, 0], IOUS[:, :, :, 1]), [-1, 7, 7, 1]), tf.float32)
-            responsible_box = tf.concat(3, [IOUS_max, IOUS_min])
-        # print 'responsible_box shape : ' , responsible_box.get_shape()
-        object_in_grids = tf.reshape(real[:,24:],[-1,7,7])
         with tf.variable_scope('center_loss') as scope:
-            box1_loss = tf.square(pred_boxes_1[:, :, :, 0] - real_boxes[:, :, :, 0]) + \
-                        tf.square(pred_boxes_1[:, :, :, 1] - real_boxes[:, :, :, 1]) + \
-                        tf.square(pred_boxes_1[:, :, :, 2] - real_boxes[:, :, :, 2]) + \
-                        tf.square(pred_boxes_1[:, :, :, 3] - real_boxes[:, :, :, 3])
-            # tf.square(tf.sqrt(pred_boxes_1_w[:, :, :]) - tf.sqrt(real_boxes[:, :, :, 2])) + \
-            # tf.square(tf.sqrt(pred_boxes_1_h[:, :, :]) - tf.sqrt(real_boxes[:, :, :, 3]))
+            box1_loss = tf.reduce_sum(tf.square(pred_boxes_1 - real_boxes),reduction_indices=3)
 
         with tf.variable_scope('size_loss') as scope:
-            box2_loss = tf.square(pred_boxes_2[:, :, :, 0] - real_boxes[:, :, :, 0]) + \
-                        tf.square(pred_boxes_2[:, :, :, 1] - real_boxes[:, :, :, 1]) + \
-                        tf.square(pred_boxes_2[:, :, :, 2] - real_boxes[:, :, :, 2]) + \
-                        tf.square(pred_boxes_2[:, :, :, 3] - real_boxes[:, :, :, 3])
-            # tf.square(tf.sqrt(pred_boxes_2_w[:, :, :]) - tf.sqrt(real_boxes[:, :, :, 2])) + \
-            # tf.square(tf.sqrt(pred_boxes_2_h[:, :, :]) - tf.sqrt(real_boxes[:, :, :, 3]))
+            box2_loss = tf.reduce_sum(tf.square(pred_boxes_2 - real_boxes), reduction_indices=3)
 
+        responsible_box = tf.greater(IOUS[:,:,:,0],IOUS[:,:,:,1])
+        print responsible_box
         with tf.variable_scope('coord_loss') as scope:
-            temp_coord_loss = tf.mul(responsible_box[:, :, :, 0], box1_loss) + tf.mul(responsible_box[:, :, :, 1],
-                                                                                      box2_loss)
-            #print 'responsible_box shape : ', responsible_box[:, :, :, 0].get_shape()
-            #print 'temp_coord_loss shape : ', temp_coord_loss.get_shape()
-            temp_coord_loss = tf.reshape(box1_loss, [-1, 7, 7, 1])
+            #temp_coord_loss = tf.mul(responsible_box[:, :, :, 0], box1_loss) + tf.mul(responsible_box[:, :, :, 1], box2_loss)
+            temp_coord_loss = tf.select(responsible_box, box1_loss, box2_loss)
+            temp_coord_loss = tf.reshape(temp_coord_loss, [-1, 7, 7, 1])
             coord_loss = self.CCOORD * tf.mul(objects_in_grids, temp_coord_loss)
-            #coord_loss = self.CCOORD * temp_coord_loss
-            #print 'coord_loss shape : ', coord_loss.get_shape()
+
         with tf.variable_scope('obj_loss') as scope:
-            temp_obj_loss = tf.reduce_sum(tf.mul(responsible_box, tf.square( (objects_in_grids - pred_p_objects))),reduction_indices=3)
+            obj_loss_tmp = tf.square(pred_p_objects - objects_in_grids)
+            print obj_loss_tmp
+            temp_obj_loss = tf.select(responsible_box, obj_loss_tmp[:,:,:,0], obj_loss_tmp[:,:,:,1])
+            #temp_obj_loss = tf.reduce_sum(tf.mul(responsible_box, tf.square( (objects_in_grids - pred_p_objects))),reduction_indices=3)
             temp_obj_loss = tf.reshape(temp_obj_loss, [-1, 7, 7, 1])
+
             obj_loss = self.CCOORD * tf.mul(objects_in_grids,temp_obj_loss)
             # print 'obj_loss shape : ', obj_loss.get_shape()
         with tf.variable_scope('noobj_loss') as scope:
-            temp_noobj_loss = tf.reduce_sum(tf.mul(responsible_box, tf.square( (objects_in_grids - pred_p_objects))),
-                                            reduction_indices=3)
-            temp_noobj_loss = tf.reshape(temp_noobj_loss, [-1, 7, 7, 1])
+            #noobj_loss_tmp = tf.square(objects_in_grids - pred_p_objects)
+            #temp_obj_loss = tf.select(responsible_box, obj_loss_tmp[:, :, :, 0], obj_loss_tmp[:, :, :, 1])
+            #temp_noobj_loss = tf.reduce_sum(tf.mul(responsible_box, tf.square( (objects_in_grids - pred_p_objects))),reduction_indices=3)
+            #temp_noobj_loss = tf.reshape(temp_noobj_loss, [-1, 7, 7, 1])
             # print 'tmp shape' , noobj_loss_tmp.get_shape()
-            noobj_loss = self.CNOOBJ * tf.mul(1 - objects_in_grids, temp_noobj_loss)
+            noobj_loss = self.CNOOBJ * tf.mul(1 - objects_in_grids, temp_obj_loss)
             print 'noobj_loss shape : ', noobj_loss.get_shape()
         with tf.variable_scope('class_loss') as scope:
             classes_diff = tf.mul(objects_in_grids, pred_classes - real_classes)
@@ -390,7 +380,6 @@ class YOLO_TF:
         index = 0 * 2
         xx = self.data[0][index : index + 2]
         yy = self.data[1][index : index + 2]
-        print yy
         for epoch in range(135):
             if self.smart_learn:
                 learning_rate = _get_learning_rate_by_epoch(epoch)
@@ -419,8 +408,8 @@ class YOLO_TF:
             for j in range(7):
                 c = np.argmax(res[i][j][:20])
                 responsible_box = 0
-                #if res[i][j][28] < res[i][j][29]:
-                    #responsible_box = 1
+                if res[i][j][28] < res[i][j][29]:
+                    responsible_box = 1
                 if i == 2 and j == 4:
                     boxes.append([i, j, c, res[i][j][c], res[i][j][28 + responsible_box],
                                   res[i][j][20 + 4 * responsible_box], res[i][j][21 + 4 * responsible_box],
@@ -526,6 +515,6 @@ if __name__ == '__main__':
     yolo_tiny = YOLO_TF()
     yolo_tiny.build_networks()
     yolo_tiny.init_network()
-    yolo_tiny.restore_weights("/home/starsea/tensorflow/yolo/weights/yolo-tiny-epoch-13.ckpt")
+    yolo_tiny.restore_weights("/home/starsea/tensorflow/yolo/weights/yolo-tiny-epoch-6.ckpt")
     yolo_tiny.predict('/home/starsea/data/VOC2007/JPEGImages/000001.jpg')
     #yolo_tiny.train()
