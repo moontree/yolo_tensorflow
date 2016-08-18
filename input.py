@@ -66,6 +66,7 @@ def recover(label):
 
     gx = index / 7
     gy = index % 7
+    print gx,gy
     xc = GRID_SIZE * (label[20] + gx)
     yc = GRID_SIZE * (label[21] + gy)
     #print w,h,xc,yc

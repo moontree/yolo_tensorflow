@@ -318,9 +318,10 @@ class YOLO_TF:
 
         with tf.variable_scope('responsible_box') as scope:
             IOUS_max = tf.cast(tf.reshape(tf.greater(IOUS[:, :, :, 0], IOUS[:, :, :, 1]), [-1, 7, 7, 1]), tf.float32)
-            IOUS_min = tf.cast(tf.reshape(tf.less(IOUS[:, :, :, 0], IOUS[:, :, :, 1]), [-1, 7, 7, 1]), tf.float32)
+            IOUS_min = tf.cast(tf.reshape(tf.less_equal(IOUS[:, :, :, 0], IOUS[:, :, :, 1]), [-1, 7, 7, 1]), tf.float32)
             responsible_box = tf.concat(3, [IOUS_max, IOUS_min])
         # print 'responsible_box shape : ' , responsible_box.get_shape()
+        object_in_grids = tf.reshape(real[:,24:],[-1,7,7])
         with tf.variable_scope('center_loss') as scope:
             box1_loss = tf.square(pred_boxes_1[:, :, :, 0] - real_boxes[:, :, :, 0]) + \
                         tf.square(pred_boxes_1[:, :, :, 1] - real_boxes[:, :, :, 1]) + \
@@ -340,32 +341,36 @@ class YOLO_TF:
         with tf.variable_scope('coord_loss') as scope:
             temp_coord_loss = tf.mul(responsible_box[:, :, :, 0], box1_loss) + tf.mul(responsible_box[:, :, :, 1],
                                                                                       box2_loss)
-            print 'responsible_box shape : ', responsible_box[:, :, :, 0].get_shape()
-            print 'temp_coord_loss shape : ', temp_coord_loss.get_shape()
-            temp_coord_loss = tf.reshape(temp_coord_loss, [-1, 7, 7, 1])
+            #print 'responsible_box shape : ', responsible_box[:, :, :, 0].get_shape()
+            #print 'temp_coord_loss shape : ', temp_coord_loss.get_shape()
+            temp_coord_loss = tf.reshape(box1_loss, [-1, 7, 7, 1])
             coord_loss = self.CCOORD * tf.mul(objects_in_grids, temp_coord_loss)
-            print 'coord_loss shape : ', coord_loss.get_shape()
+            #coord_loss = self.CCOORD * temp_coord_loss
+            #print 'coord_loss shape : ', coord_loss.get_shape()
         with tf.variable_scope('obj_loss') as scope:
-            obj_loss = tf.mul(objects_in_grids,
-                              tf.reduce_sum(tf.mul(responsible_box, tf.square(IOUS * (1 - pred_p_objects)))))
+            temp_obj_loss = tf.reduce_sum(tf.mul(responsible_box, tf.square( (objects_in_grids - pred_p_objects))),reduction_indices=3)
+            temp_obj_loss = tf.reshape(temp_obj_loss, [-1, 7, 7, 1])
+            obj_loss = self.CCOORD * tf.mul(objects_in_grids,temp_obj_loss)
             # print 'obj_loss shape : ', obj_loss.get_shape()
         with tf.variable_scope('noobj_loss') as scope:
-            temp_noobj_loss = tf.reduce_sum(tf.mul(responsible_box, tf.square(IOUS * (1 - pred_p_objects))),
+            temp_noobj_loss = tf.reduce_sum(tf.mul(responsible_box, tf.square( (objects_in_grids - pred_p_objects))),
                                             reduction_indices=3)
             temp_noobj_loss = tf.reshape(temp_noobj_loss, [-1, 7, 7, 1])
             # print 'tmp shape' , noobj_loss_tmp.get_shape()
             noobj_loss = self.CNOOBJ * tf.mul(1 - objects_in_grids, temp_noobj_loss)
-            # print 'noobj_loss shape : ', noobj_loss.get_shape()
+            print 'noobj_loss shape : ', noobj_loss.get_shape()
         with tf.variable_scope('class_loss') as scope:
-            classes_diff = pred_classes - real_classes
-            # print 'classes_diff shape ', classes_diff
-            class_loss = tf.mul(objects_in_grids, tf.reduce_sum(tf.square(classes_diff)))
+            classes_diff = tf.mul(objects_in_grids, pred_classes - real_classes)
+            #print 'classes_diff shape ', classes_diff
+            class_loss = tf.reduce_sum(tf.square(classes_diff), reduction_indices=3)
+            class_loss = tf.reshape(class_loss,[-1,7,7,1])
+            #class_loss = tf.mul(objects_in_grids, tf.reduce_sum(tf.square(classes_diff),reduction_indices = 3))
             # print 'class_loss shape : ', class_loss.get_shape()
         with tf.variable_scope('total_loss') as scope:
             total_loss = coord_loss + obj_loss + noobj_loss + class_loss
             # print 'total_loss shape : ', total_loss.get_shape()
             loss = tf.reduce_mean(tf.reduce_sum(total_loss, reduction_indices=[1, 2, 3]), reduction_indices=0)
-        return loss
+        return tf.reduce_sum(loss)
 
 
     def init_network(self):
@@ -382,16 +387,20 @@ class YOLO_TF:
 
     def train(self):
         print 'start training ...'
+        index = 0 * 2
+        xx = self.data[0][index : index + 2]
+        yy = self.data[1][index : index + 2]
+        print yy
         for epoch in range(135):
             if self.smart_learn:
                 learning_rate = _get_learning_rate_by_epoch(epoch)
             else:
                 learning_rate = 0.001
             for step in range(16):
-                index = step * 2
-                xx = self.data[0][index: index + 2]
-                yy = self.data[1][index: index + 2]
-                _, mstr, total_loss = self.sess.run([self.train_step, self.mop, self.loss], feed_dict = {self.learning_rate : learning_rate, self.x : xx,  self.labels: yy})
+                #index = step * 2
+                #xx = self.data[0][index: index + 2]
+                #yy = self.data[1][index: index + 2]
+                _, mstr, total_loss = self.sess.run([self.train_step, self.mop, self.loss], feed_dict = {self.learning_rate : 0.001, self.x : xx,  self.labels: yy})
                 print 'training epoch = %d, step = %d, loss = %f' %(epoch, step, total_loss)
                 self.mWriter.add_summary(mstr, 50 * epoch + step)
             if self.autosave:
@@ -405,16 +414,52 @@ class YOLO_TF:
         res = self.sess.run(self.fc_19, feed_dict = {self.x : [imgMat]})
         res = np.reshape(res,[7,7,30])
         boxes = []
+        print "i,j,c,p,confidence,x,y,w,h'"
         for i in range(7):
             for j in range(7):
                 c = np.argmax(res[i][j][:20])
-                score_th = 0.0
                 responsible_box = 0
-                if res[i][j][28] < res[i][j][29]:
-                    responsible_box = 1
-                if res[i][j][28 + responsible_box] > score_th:
-                    boxes.append([i,j,c,res[i][j][28+responsible_box],res[i][j][20 + 4 * i : 20 + 4 * i + 4]])
+                #if res[i][j][28] < res[i][j][29]:
+                    #responsible_box = 1
+                if i == 2 and j == 4:
+                    boxes.append([i, j, c, res[i][j][c], res[i][j][28 + responsible_box],
+                                  res[i][j][20 + 4 * responsible_box], res[i][j][21 + 4 * responsible_box],
+                                  res[i][j][22 + 4 * responsible_box], res[i][j][23 + 4 * responsible_box]])
+                if i == 3 and j == 3:
+                    boxes.append([i, j, c, res[i][j][c], res[i][j][28 + responsible_box],
+                                  res[i][j][20 + 4 * responsible_box], res[i][j][21 + 4 * responsible_box],
+                                  res[i][j][22 + 4 * responsible_box], res[i][j][23 + 4 * responsible_box]])
+                '''if(res[i][j][c] > -2.0):
+                    score_th = 0.5
+                    responsible_box = 0
+                    if res[i][j][28] < res[i][j][29]:
+                        responsible_box = 1
+                    if res[i][j][28 + responsible_box] > score_th:
+                        w = res[i][j][22 + 4 * responsible_box]
+                        h = res[i][j][23 + 4 * responsible_box]
+                        size_threshold = -3.00
+                        if w > size_threshold and h > size_threshold:
+                            boxes.append([i,j,c,res[i][j][c],res[i][j][28+responsible_box],
+                                      res[i][j][20 + 4 * responsible_box],res[i][j][21 + 4 * responsible_box],
+                                      res[i][j][22 + 4 * responsible_box],res[i][j][23 + 4 * responsible_box]])'''
+
+
         print boxes
+
+        draw = ImageDraw.Draw(im)
+        for box in boxes :
+            w = box[7] * self.IMAGE_WIDTH / 2
+            h = box[8] * self.IMAGE_HEIGHT / 2
+            print 'w = ', w, ' h = ', h
+            lx = (box[0] + box[5]) * self.GRID_SIZE - w
+            ly = (box[1] + box[6]) * self.GRID_SIZE - h
+            tx = (box[0] + box[5]) * self.GRID_SIZE + w
+            ty = (box[1] + box[6]) * self.GRID_SIZE + h
+            print(lx,ly,tx,ty)
+            draw.rectangle((lx,ly,tx,ty))
+            content = self.classes[box[2]] + ' p = ' + str(box[3])
+            draw.text((lx, ly), content, fill=(255, 255, 255))
+        im.show()
 
 
 
@@ -422,16 +467,17 @@ class YOLO_TF:
 
 
 def _weight_init(shape):
-        stddev = 2.0
-        for a in shape[:-1]:
-            stddev /= a
-        stddev = math.sqrt(stddev)
-        var = tf.truncated_normal(shape, stddev = 0.0001)
-        return tf.Variable(var)
+    print 'shape = ' ,shape
+    stddev = 2.0
+    for a in shape[:]:
+        stddev /= a
+    stddev = math.sqrt(stddev)
+    var = tf.truncated_normal(shape, stddev = stddev)
+    return tf.Variable(var)
 
 def _bias_init(shape):
-        initial = tf.constant(0.0, shape=shape)
-        return tf.Variable(initial)
+    initial = tf.constant(0.0, shape=shape)
+    return tf.Variable(initial)
 
 def _get_learning_rate_by_epoch(epoch):
     if epoch < 75 :
@@ -480,6 +526,6 @@ if __name__ == '__main__':
     yolo_tiny = YOLO_TF()
     yolo_tiny.build_networks()
     yolo_tiny.init_network()
-    yolo_tiny.restore_weights("/home/starsea/tensorflow/yolo/weights/YOLO_tiny.ckpt")
-    #yolo_tiny.predict('/home/starsea/data/VOC2007/JPEGImages/000001.jpg')
-    yolo_tiny.train()
+    yolo_tiny.restore_weights("/home/starsea/tensorflow/yolo/weights/yolo-tiny-epoch-13.ckpt")
+    yolo_tiny.predict('/home/starsea/data/VOC2007/JPEGImages/000001.jpg')
+    #yolo_tiny.train()
