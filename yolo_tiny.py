@@ -134,121 +134,9 @@ class YOLO_TF:
         ip = tf.add(tf.matmul(inputs_processed, weight), biases)
         return tf.maximum(self.alpha * ip, ip, name=str(idx) + '_fc')
 
-    def detect_from_imgMat(self, imgMat):
-        s = time.time()
-        inputs = np.zeros((1, 448, 448, 3), dtype='float32')
-        inputs[0] = (imgMat / 255.0) * 2.0 - 1.0
-        in_dict = {self.x: inputs}
-        net_output = self.sess.run(self.fc_19, feed_dict=in_dict)
-        self.result = self.interpret_output(net_output[0])
-        self.show_results(imgMat, self.result)
-        strtime = str(time.time() - s)
-        if self.disp_console: print 'Elapsed time : ' + strtime + ' secs' + '\n'
-
-    def detect_from_file(self, filename):
-        if self.disp_console: print 'Detect from ' + filename
-        img = Image.read(filename)
-        img_resize = img.resize((448, 448))
-        imgMat = np.array(img_resize)
-        # img = misc.imread(filename)
-        self.detect_from_cvmat(imgMat)
-
-    def detect_from_crop_sample(self):
-        self.w_img = 640
-        self.h_img = 420
-        f = np.array(open('person_crop.txt', 'r').readlines(), dtype='float32')
-        inputs = np.zeros((1, 448, 448, 3), dtype='float32')
-        for c in range(3):
-            for y in range(448):
-                for x in range(448):
-                    inputs[0, y, x, c] = f[c * 448 * 448 + y * 448 + x]
-
-        in_dict = {self.x: inputs}
-        net_output = self.sess.run(self.fc_19, feed_dict=in_dict)
-        self.boxes, self.probs = self.interpret_output(net_output[0])
-        img = cv2.imread('person.jpg')
-        self.show_results(self.boxes, img)
-
-    def interpret_output(self, output):
-        probs = np.zeros((7, 7, 2, 20))
-        class_probs = np.reshape(output[0:980], (7, 7, 20))
-        scales = np.reshape(output[980:1078], (7, 7, 2))
-        boxes = np.reshape(output[1078:], (7, 7, 2, 4))
-        offset = np.transpose(np.reshape(np.array([np.arange(7)] * 14), (2, 7, 7)), (1, 2, 0))
-
-        boxes[:, :, :, 0] += offset
-        boxes[:, :, :, 1] += np.transpose(offset, (1, 0, 2))
-        boxes[:, :, :, 0:2] = boxes[:, :, :, 0:2] / 7.0
-        boxes[:, :, :, 2] = np.multiply(boxes[:, :, :, 2], boxes[:, :, :, 2])
-        boxes[:, :, :, 3] = np.multiply(boxes[:, :, :, 3], boxes[:, :, :, 3])
-
-        boxes[:, :, :, 0] *= self.w_img
-        boxes[:, :, :, 1] *= self.h_img
-        boxes[:, :, :, 2] *= self.w_img
-        boxes[:, :, :, 3] *= self.h_img
-
-        for i in range(2):
-            for j in range(20):
-                probs[:, :, i, j] = np.multiply(class_probs[:, :, j], scales[:, :, i])
-
-        filter_mat_probs = np.array(probs >= self.threshold, dtype='bool')
-        filter_mat_boxes = np.nonzero(filter_mat_probs)
-        boxes_filtered = boxes[filter_mat_boxes[0], filter_mat_boxes[1], filter_mat_boxes[2]]
-        probs_filtered = probs[filter_mat_probs]
-        classes_num_filtered = np.argmax(filter_mat_probs, axis=3)[
-            filter_mat_boxes[0], filter_mat_boxes[1], filter_mat_boxes[2]]
-
-        argsort = np.array(np.argsort(probs_filtered))[::-1]
-        boxes_filtered = boxes_filtered[argsort]
-        probs_filtered = probs_filtered[argsort]
-        classes_num_filtered = classes_num_filtered[argsort]
-
-        for i in range(len(boxes_filtered)):
-            if probs_filtered[i] == 0: continue
-            for j in range(i + 1, len(boxes_filtered)):
-                if self.iou(boxes_filtered[i], boxes_filtered[j]) > self.iou_threshold:
-                    probs_filtered[j] = 0.0
-
-        filter_iou = np.array(probs_filtered > 0.0, dtype='bool')
-        boxes_filtered = boxes_filtered[filter_iou]
-        probs_filtered = probs_filtered[filter_iou]
-        classes_num_filtered = classes_num_filtered[filter_iou]
-
-        result = []
-        for i in range(len(boxes_filtered)):
-            result.append([self.classes[classes_num_filtered[i]], boxes_filtered[i][0], boxes_filtered[i][1],
-                           boxes_filtered[i][2], boxes_filtered[i][3], probs_filtered[i]])
-
-        return result
-
-    def show_results(self, img, results):
-        img_cp = Image.fromarray(img)
-        if self.filewrite_txt:
-            ftxt = open(self.tofile_txt, 'w')
-        for i in range(len(results)):
-            x = int(results[i][1])
-            y = int(results[i][2])
-            w = int(results[i][3]) // 2
-            h = int(results[i][4]) // 2
-            if self.disp_console: print '    class : ' + results[i][0] + ' , [x,y,w,h]=[' + str(x) + ',' + str(
-                y) + ',' + str(int(results[i][3])) + ',' + str(int(results[i][4])) + '], Confidence = ' + str(
-                results[i][5])
-            if self.filewrite_img or self.imshow:
-                draw = ImageDraw.Draw(img_cp)
-                draw.line((x - w, y - h), (x - w, y + h), (x + w, y - h), (x + w, y + h))
-                draw.text((x - w + 5, y - h - 7), results[i][0] + ' : %.2f' % results[i][5], fill=(255, 255, 255))
-            if self.filewrite_txt:
-                ftxt.write(results[i][0] + ',' + str(x) + ',' + str(y) + ',' + str(w) + ',' + str(h) + ',' + str(
-                    results[i][5]) + '\n')
-        if self.filewrite_img:
-            if self.disp_console: print '    image file writed : ' + self.tofile_img
-            img_cp.save(self.tofile_img,'JPEG')
-        if self.imshow:
-            img_cp.show()
-        if self.filewrite_txt:
-            if self.disp_console: print '    txt file writed : ' + self.tofile_txt
-            ftxt.close()
-
+    '''
+    save trained network to file
+    '''
     def save_weights(self, filename):
         if self.saver :
             self.saver.save(self.sess, filename)
@@ -258,6 +146,9 @@ class YOLO_TF:
             if(self.disp_console):
                 print 'There is no session with tensorflow'
 
+    '''
+    restore trained network from file
+    '''
     def restore_weights(self, filename):
         if self.saver :
             self.saver.restore(self.sess, filename)
@@ -342,9 +233,14 @@ class YOLO_TF:
             total_loss = coord_loss + obj_loss + noobj_loss + class_loss
             # print 'total_loss shape : ', total_loss.get_shape()
             loss = tf.reduce_mean(tf.reduce_sum(total_loss, reduction_indices=[1, 2, 3]), reduction_indices=0)
-        return tf.reduce_sum(loss)
+        return loss
 
-
+    '''
+    init network
+    session from tensorflow
+    saver
+    summary
+    '''
     def init_network(self):
         self.sess = tf.Session()
         self.sess.run(tf.initialize_all_variables())
@@ -355,6 +251,9 @@ class YOLO_TF:
         if self.disp_console:
             print 'weights init finished'
 
+    '''
+    train
+    '''
     def train(self):
         if not self.data:
             if self.disp_console:
@@ -380,6 +279,9 @@ class YOLO_TF:
                 filename = 'weights/yolo-tiny-epoch-' + str(epoch) + '.ckpt'
                 self.save_weights(filename)
 
+    '''
+    detection from file
+    '''
     def predict(self,image):
         im = Image.open(image)
         im = im.resize((self.IMAGE_WIDTH,self.IMAGE_HEIGHT))
@@ -494,5 +396,5 @@ if __name__ == '__main__':
         path = raw_input("Enter image path: ");
         print "predicting ", path
         yolo_tiny.predict(path)'''
-    yolo_tiny.predict('/home/starsea/data/VOC2007/JPEGImages/000001.jpg')
-    #yolo_tiny.train()
+    #yolo_tiny.predict('/home/starsea/data/VOC2007/JPEGImages/000001.jpg')
+    yolo_tiny.train()

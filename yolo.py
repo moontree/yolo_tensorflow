@@ -126,7 +126,7 @@ def cal_ious(box1, box2, real_box):
 
 
 '''
-calculate total loss
+calculate total loss, something is error, to be fixed
 ----------predict result----------
     shape : ?  * 7 * 7 * 30
     0~19 : classes
@@ -139,11 +139,11 @@ calculate total loss
     20 ~ 23 : true box
     24 ~ 72 : cell has object or not
 '''
-def cal_loss(pred,real):
+def cal_loss_not_used(pred,real):
     pred_classes = pred[:, :, :, :20]
     pred_boxes_1 = pred[:, :, :, 20:24]
     pred_boxes_2 = pred[:, :, :, 24:28]
-    pred_p_objects = pred[:, :, :, 28:29]
+    pred_p_objects = pred[:, :, :, 28:30]
     real_classes = tf.reshape(real[:, :20], [-1, 1, 1, 20])
     real_boxes = tf.reshape(real[:, 20:24], [-1, 1, 1, 4])
     #print 'real_boxes shape', real_boxes.get_shape()
@@ -204,6 +204,80 @@ def cal_loss(pred,real):
         loss = tf.reduce_mean(tf.reduce_sum(total_loss, reduction_indices=[1, 2, 3]), reduction_indices=0)
     return loss
 
+
+'''
+calculate total loss
+----------predict result----------
+    shape : ?  * 7 * 7 * 30
+    0~19 : classes
+    20~23 : box1
+    24~27 : box2
+    28,29 : p_object
+----------real result----------
+    shape ?  * 20 + 4 + 49
+    0 ~ 19 : classes
+    20 ~ 23 : true box
+    24 ~ 72 : cell has object or not
+'''
+def cal_loss(pred,real):
+    pred_classes = pred[:, :, :, :20]
+    pred_boxes_1 = pred[:, :, :, 20:24]
+    pred_boxes_2 = pred[:, :, :, 24:28]
+    pred_p_objects = pred[:, :, :, 28:30]
+    real_classes = tf.reshape(real[:, :20], [-1, 1, 1, 20])
+    real_boxes = tf.reshape(real[:, 20:24], [-1, 1, 1, 4])
+    # print 'real_boxes shape', real_boxes.get_shape()
+    objects_in_grids = tf.reshape(real[:, 24:], [-1, 7, 7, 1])
+
+    select_zeros = pred_p_objects[:,:,:,0] - pred_p_objects[:,:,:,0]
+    select_ones = select_zeros + 1
+    # IOUS shape :  ? * 7 * 7 * 2
+    with tf.variable_scope('IOUS') as scope:
+        IOUS = cal_ious(pred_boxes_1, pred_boxes_2, real_boxes)
+
+    with tf.variable_scope('center_loss') as scope:
+        box1_loss = tf.reduce_sum(tf.square(pred_boxes_1 - real_boxes),reduction_indices=3)
+
+    with tf.variable_scope('size_loss') as scope:
+        box2_loss = tf.reduce_sum(tf.square(pred_boxes_2 - real_boxes), reduction_indices=3)
+
+    responsible_box = tf.greater(IOUS[:,:,:,0],IOUS[:,:,:,1])
+    print responsible_box
+    with tf.variable_scope('coord_loss') as scope:
+        #temp_coord_loss = tf.mul(responsible_box[:, :, :, 0], box1_loss) + tf.mul(responsible_box[:, :, :, 1], box2_loss)
+        temp_coord_loss = tf.select(responsible_box, box1_loss, box2_loss)
+        temp_coord_loss = tf.reshape(temp_coord_loss, [-1, 7, 7, 1])
+        coord_loss = CCOORD * tf.mul(objects_in_grids, temp_coord_loss)
+
+    with tf.variable_scope('obj_loss') as scope:
+        obj_loss_tmp = tf.square(pred_p_objects - objects_in_grids)
+        print obj_loss_tmp
+        temp_obj_loss = tf.select(responsible_box, obj_loss_tmp[:,:,:,0], obj_loss_tmp[:,:,:,1])
+        #temp_obj_loss = tf.reduce_sum(tf.mul(responsible_box, tf.square( (objects_in_grids - pred_p_objects))),reduction_indices=3)
+        temp_obj_loss = tf.reshape(temp_obj_loss, [-1, 7, 7, 1])
+
+        obj_loss = CCOORD * tf.mul(objects_in_grids,temp_obj_loss)
+        # print 'obj_loss shape : ', obj_loss.get_shape()
+    with tf.variable_scope('noobj_loss') as scope:
+        #noobj_loss_tmp = tf.square(objects_in_grids - pred_p_objects)
+        #temp_obj_loss = tf.select(responsible_box, obj_loss_tmp[:, :, :, 0], obj_loss_tmp[:, :, :, 1])
+        #temp_noobj_loss = tf.reduce_sum(tf.mul(responsible_box, tf.square( (objects_in_grids - pred_p_objects))),reduction_indices=3)
+        #temp_noobj_loss = tf.reshape(temp_noobj_loss, [-1, 7, 7, 1])
+        # print 'tmp shape' , noobj_loss_tmp.get_shape()
+        noobj_loss = CNOOBJ * tf.mul(1 - objects_in_grids, temp_obj_loss)
+        print 'noobj_loss shape : ', noobj_loss.get_shape()
+    with tf.variable_scope('class_loss') as scope:
+        classes_diff = tf.mul(objects_in_grids, pred_classes - real_classes)
+        #print 'classes_diff shape ', classes_diff
+        class_loss = tf.reduce_sum(tf.square(classes_diff), reduction_indices=3)
+        class_loss = tf.reshape(class_loss,[-1,7,7,1])
+        #class_loss = tf.mul(objects_in_grids, tf.reduce_sum(tf.square(classes_diff),reduction_indices = 3))
+        # print 'class_loss shape : ', class_loss.get_shape()
+    with tf.variable_scope('total_loss') as scope:
+        total_loss = coord_loss + obj_loss + noobj_loss + class_loss
+        # print 'total_loss shape : ', total_loss.get_shape()
+        loss = tf.reduce_mean(tf.reduce_sum(total_loss, reduction_indices=[1, 2, 3]), reduction_indices=0)
+    return loss
 '''
 YOLO net architecture
 '''
