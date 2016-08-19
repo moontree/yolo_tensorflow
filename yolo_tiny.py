@@ -37,21 +37,6 @@ class YOLO_TF:
         self.build_networks()
         if self.fromfile is not None: self.detect_from_file(self.fromfile)'''
 
-    '''def argv_parser(self, argvs):
-        for i in range(1, len(argvs), 2):
-            if argvs[i] == '-fromfile': self.fromfile = argvs[i + 1]
-            if argvs[i] == '-tofile_img': self.tofile_img = argvs[i + 1]; self.filewrite_img = True
-            if argvs[i] == '-tofile_txt': self.tofile_txt = argvs[i + 1]; self.filewrite_txt = True
-            if argvs[i] == '-imshow':
-                if argvs[i + 1] == '1':
-                    self.imshow = True
-                else:
-                    self.imshow = False
-            if argvs[i] == '-disp_console':
-                if argvs[i + 1] == '1':
-                    self.disp_console = True
-                else:
-                    self.disp_console = False'''
 
     def build_networks(self):
         if self.disp_console: print "Building YOLO_tiny graph..."
@@ -77,13 +62,12 @@ class YOLO_TF:
         self.fc_17 = self.fc_layer(17, self.fc_16, 4096, flat=False, linear=False)
         # skip dropout_18
         self.fc_19 = self.fc_layer(19, self.fc_17, 1470, flat=False, linear=True)
-        #self.labels = tf.placeholder(tf.float32, [None, 73])
         self.loss = self.cal_loss(self.fc_19, self.labels)
-        #self.learning_rate = 0.001
         self.train_step = tf.train.MomentumOptimizer(self.learning_rate, 0.9).minimize(self.loss)
         if self.disp_console: print "Loading complete!" + '\n'
 
-
+    def set_data(self, data):
+        self.data = data
 
     '''
     build a conv layer.
@@ -267,7 +251,6 @@ class YOLO_TF:
 
     def save_weights(self, filename):
         if self.saver :
-            #self.saver = tf.train.Saver()
             self.saver.save(self.sess, filename)
             if self.disp_console:
                 print 'save weights to ' + filename
@@ -276,14 +259,13 @@ class YOLO_TF:
                 print 'There is no session with tensorflow'
 
     def restore_weights(self, filename):
-        print filename
         if self.saver :
             self.saver.restore(self.sess, filename)
-            print 'restore weights from file ' + filename
+            if self.disp_console:
+                print 'restore weights from file ' + filename
         else :
-            print 'There is no session with tensorflow'
-            #self.sess = tf.Session()
-            #self.sess.run(tf.initialize_all_variables())
+            if self.disp_console:
+                print 'There is no session with tensorflow, create new session'
             self.saver = tf.train.Saver()
             self.saver.restore(self.sess, filename)
 
@@ -367,8 +349,6 @@ class YOLO_TF:
         self.sess = tf.Session()
         self.sess.run(tf.initialize_all_variables())
         self.saver = tf.train.Saver()
-        self.data = input.get_data()
-
         tf.scalar_summary('loss',self.loss)
         self.mWriter = tf.train.SummaryWriter('tiny_log', self.sess.graph)
         self.mop = tf.merge_all_summaries()
@@ -376,6 +356,10 @@ class YOLO_TF:
             print 'weights init finished'
 
     def train(self):
+        if not self.data:
+            if self.disp_console:
+                print 'no data for network'
+            return
         print 'start training ...'
         index = 0 * 2
         xx = self.data[0][index : index + 2]
@@ -407,18 +391,7 @@ class YOLO_TF:
         for i in range(7):
             for j in range(7):
                 c = np.argmax(res[i][j][:20])
-                responsible_box = 0
-                if res[i][j][28] < res[i][j][29]:
-                    responsible_box = 1
-                if i == 2 and j == 4:
-                    boxes.append([i, j, c, res[i][j][c], res[i][j][28 + responsible_box],
-                                  res[i][j][20 + 4 * responsible_box], res[i][j][21 + 4 * responsible_box],
-                                  res[i][j][22 + 4 * responsible_box], res[i][j][23 + 4 * responsible_box]])
-                if i == 3 and j == 3:
-                    boxes.append([i, j, c, res[i][j][c], res[i][j][28 + responsible_box],
-                                  res[i][j][20 + 4 * responsible_box], res[i][j][21 + 4 * responsible_box],
-                                  res[i][j][22 + 4 * responsible_box], res[i][j][23 + 4 * responsible_box]])
-                '''if(res[i][j][c] > -2.0):
+                if(res[i][j][c] > 0.5):
                     score_th = 0.5
                     responsible_box = 0
                     if res[i][j][28] < res[i][j][29]:
@@ -426,11 +399,11 @@ class YOLO_TF:
                     if res[i][j][28 + responsible_box] > score_th:
                         w = res[i][j][22 + 4 * responsible_box]
                         h = res[i][j][23 + 4 * responsible_box]
-                        size_threshold = -3.00
+                        size_threshold = 0.05
                         if w > size_threshold and h > size_threshold:
                             boxes.append([i,j,c,res[i][j][c],res[i][j][28+responsible_box],
                                       res[i][j][20 + 4 * responsible_box],res[i][j][21 + 4 * responsible_box],
-                                      res[i][j][22 + 4 * responsible_box],res[i][j][23 + 4 * responsible_box]])'''
+                                      res[i][j][22 + 4 * responsible_box],res[i][j][23 + 4 * responsible_box]])
 
 
         print boxes
@@ -515,6 +488,11 @@ if __name__ == '__main__':
     yolo_tiny = YOLO_TF()
     yolo_tiny.build_networks()
     yolo_tiny.init_network()
+    yolo_tiny.set_data(input.get_data())
     yolo_tiny.restore_weights("/home/starsea/tensorflow/yolo/weights/yolo-tiny-epoch-6.ckpt")
+    '''while True:
+        path = raw_input("Enter image path: ");
+        print "predicting ", path
+        yolo_tiny.predict(path)'''
     yolo_tiny.predict('/home/starsea/data/VOC2007/JPEGImages/000001.jpg')
     #yolo_tiny.train()
